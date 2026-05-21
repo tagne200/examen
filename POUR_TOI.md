@@ -1,6 +1,6 @@
 # 📋 RÉCAPITULATIF PROJET DIGITRANS-CM CRM
 
-## ✅ CE QUI A ÉTÉ CRÉÉ
+## ✅ CE QUI A ÉTÉ CRÉÉ ok
 
 ### 🎯 Livrables Principaux (100% Complets)
 
