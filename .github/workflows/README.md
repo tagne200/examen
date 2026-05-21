@@ -1,267 +1,205 @@
-# GitHub Actions CI/CD Pipeline
+# Pipeline CI/CD - DIGITRANS-CM
 
-## Vue d'Ensemble
+## 📋 Vue d'Ensemble
 
-Ce pipeline automatise les tests, la sécurité, le build et le déploiement du projet DIGITRANS-CM CRM.
+Ce pipeline automatise les tests, le build et le déploiement de l'application CRM DIGITRANS-CM.
 
-## Workflows
+## 🔄 Workflow
 
-### 1. Test Backend (`test-backend`)
-- **Déclenchement** : Push sur `main` ou `develop`, Pull Request
-- **Actions** :
-  - Démarre une base PostgreSQL 15 en service
-  - Installe les dépendances Python
-  - Initialise la base de données
-  - Exécute les tests avec pytest
-  - Génère un rapport de couverture
-  - Upload vers Codecov
+```
+Push/PR → Tests → Lint → Build → Deploy (si main)
+```
 
-### 2. Linting & Security (`lint-and-security`)
-- **Déclenchement** : Push sur `main` ou `develop`, Pull Request
-- **Actions** :
-  - **Black** : Vérification du formatage du code
-  - **Flake8** : Linting Python
-  - **Bandit** : Scan de sécurité
-  - **Safety** : Vérification des vulnérabilités des dépendances
+## 🎯 Jobs du Pipeline
 
-### 3. Build Docker (`build-docker`)
-- **Déclenchement** : Après succès des tests
-- **Actions** :
-  - Build de l'image Docker
-  - Tag avec le SHA du commit
-  - Test de l'image
+### 1. test-backend ✅
+**Durée** : ~2 minutes  
+**Déclencheur** : Tous les push et PR
 
-### 4. Deploy AWS (`deploy-aws`)
-- **Déclenchement** : Push sur `main` uniquement
-- **Actions** :
-  - Déploiement du frontend sur S3
-  - Invalidation du cache CloudFront
-  - Déploiement du backend sur Lambda (optionnel)
+**Actions** :
+- Lance PostgreSQL en service
+- Installe les dépendances Python
+- Initialise la base de données
+- Exécute les tests avec pytest
+- Génère le rapport de couverture
+- Upload vers Codecov
 
-### 5. Notification (`notify`)
-- **Déclenchement** : Toujours (après tous les jobs)
-- **Actions** :
-  - Envoi de notification de statut
+**Conditions de succès** :
+- Tous les tests passent
+- Couverture > 0% (idéalement > 80%)
 
-## Configuration des Secrets GitHub
+### 2. lint-and-security ⚠️
+**Durée** : ~1 minute  
+**Déclencheur** : Tous les push et PR
 
-Pour que le pipeline fonctionne, configurer les secrets suivants dans GitHub :
+**Actions** :
+- Black : Vérification du formatage
+- Flake8 : Linting Python
+- Bandit : Scan de sécurité
+- Safety : Vérification des dépendances
 
-### Secrets Requis
+**Note** : `continue-on-error: true` → N'empêche pas le déploiement
 
-1. **AWS Credentials**
-   ```
-   AWS_ACCESS_KEY_ID=AKIAXXXXXXXXXXXXXXXX
-   AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-   ```
+### 3. build-docker 🐳
+**Durée** : ~3 minutes  
+**Déclencheur** : Tous les push et PR  
+**Dépend de** : test-backend
 
-2. **AWS Resources**
-   ```
-   S3_BUCKET_NAME=digitrans-crm-frontend
-   CLOUDFRONT_DISTRIBUTION_ID=E1XXXXXXXXXXXXX
-   ```
+**Actions** :
+- Build de l'image Docker
+- Tag avec le SHA du commit
+- Test de l'image
 
-3. **Database (optionnel pour tests)**
-   ```
-   DATABASE_URL=postgresql://user:pass@host:5432/db
-   ```
+### 4. deploy-aws 🚀
+**Durée** : ~2 minutes  
+**Déclencheur** : Push sur `main` uniquement  
+**Dépend de** : test-backend, lint-and-security, build-docker
 
-4. **Azure AD (optionnel)**
-   ```
-   AZURE_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   AZURE_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-   ```
+**Actions** :
+- Déploie le frontend sur S3
+- Invalide le cache CloudFront
+- Déploie le backend sur Lambda (optionnel)
 
-## Comment Configurer les Secrets
+**Condition** :
+```yaml
+if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+```
 
-### Via l'Interface GitHub
+### 5. notify 📧
+**Durée** : ~10 secondes  
+**Déclencheur** : Toujours (après deploy-aws)
 
-1. Aller dans votre repository GitHub
-2. Cliquer sur **Settings** → **Secrets and variables** → **Actions**
-3. Cliquer sur **New repository secret**
-4. Ajouter chaque secret avec son nom et sa valeur
+**Actions** :
+- Affiche le statut du pipeline
+- Peut envoyer des notifications (à configurer)
 
-### Via GitHub CLI
+## 🔐 Secrets Requis
+
+| Secret | Description | Exemple |
+|--------|-------------|---------|
+| `AWS_ACCESS_KEY_ID` | Clé d'accès AWS | `AKIAIOSFODNN7EXAMPLE` |
+| `AWS_SECRET_ACCESS_KEY` | Clé secrète AWS | `wJalrXUtnFEMI/K7MDENG/...` |
+| `S3_BUCKET_NAME` | Nom du bucket S3 | `digitrans-crm-frontend` |
+| `CLOUDFRONT_DISTRIBUTION_ID` | ID CloudFront | `E1234567890ABC` |
+
+**Configuration** : Settings → Secrets and variables → Actions
+
+## 📊 Matrice de Déploiement
+
+| Branche | Tests | Build | Deploy | Environnement |
+|---------|-------|-------|--------|---------------|
+| `develop` | ✅ | ✅ | ⏭️ Skip | - |
+| `main` | ✅ | ✅ | ✅ | Production |
+| `feature/*` | ✅ | ✅ | ⏭️ Skip | - |
+| Pull Request | ✅ | ✅ | ⏭️ Skip | - |
+
+## 🐛 Dépannage
+
+### Le déploiement est skippé
+
+**Causes possibles** :
+1. Vous n'êtes pas sur la branche `main`
+2. C'est une Pull Request (normal)
+3. Les secrets AWS ne sont pas configurés
+4. Un job précédent a échoué
+
+**Solution** : Voir [TROUBLESHOOTING-CICD.md](../../docs/TROUBLESHOOTING-CICD.md)
+
+### Les tests échouent
 
 ```bash
-gh secret set AWS_ACCESS_KEY_ID -b"AKIAXXXXXXXXXXXXXXXX"
-gh secret set AWS_SECRET_ACCESS_KEY -b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-gh secret set S3_BUCKET_NAME -b"digitrans-crm-frontend"
-gh secret set CLOUDFRONT_DISTRIBUTION_ID -b"E1XXXXXXXXXXXXX"
+# Tester localement
+cd backend
+pytest tests/ -v
+
+# Vérifier la base de données
+docker-compose up -d postgres
+python -m app.database init
 ```
 
-## Badges de Statut
-
-Ajouter ces badges dans votre README.md :
-
-```markdown
-![CI/CD Pipeline](https://github.com/votre-username/digitrans-crm/actions/workflows/ci-cd.yml/badge.svg)
-![Coverage](https://codecov.io/gh/votre-username/digitrans-crm/branch/main/graph/badge.svg)
-```
-
-## Déclenchement Manuel
-
-Pour déclencher manuellement le workflow :
+### Le build Docker échoue
 
 ```bash
-# Via GitHub CLI
-gh workflow run ci-cd.yml
-
-# Via l'interface GitHub
-Actions → CI/CD Pipeline → Run workflow
+# Tester localement
+cd backend
+docker build -t test .
+docker run --rm test python --version
 ```
 
-## Logs et Debugging
+## 🔧 Modification du Pipeline
 
-### Voir les logs d'un workflow
-
-```bash
-gh run list
-gh run view <run-id>
-gh run view <run-id> --log
-```
-
-### Débugger un échec
-
-1. Aller dans **Actions** sur GitHub
-2. Cliquer sur le workflow échoué
-3. Cliquer sur le job échoué
-4. Examiner les logs détaillés
-
-## Optimisations
-
-### Cache des Dépendances
-
-Le pipeline utilise le cache pour accélérer les builds :
-- Cache pip pour Python
-- Cache npm pour Node.js (si ajouté)
-
-### Exécution Parallèle
-
-Les jobs `test-backend` et `lint-and-security` s'exécutent en parallèle pour gagner du temps.
-
-### Exécution Conditionnelle
-
-Le job `deploy-aws` ne s'exécute que :
-- Sur la branche `main`
-- Après succès de tous les tests
-- Sur un push (pas sur PR)
-
-## Temps d'Exécution Estimé
-
-- **test-backend** : 2-3 minutes
-- **lint-and-security** : 1-2 minutes
-- **build-docker** : 2-3 minutes
-- **deploy-aws** : 1-2 minutes
-
-**Total** : ~6-10 minutes
-
-## Notifications
-
-### Slack (optionnel)
-
-Ajouter ce step dans le job `notify` :
+### Ajouter un environnement staging
 
 ```yaml
-- name: Slack Notification
+deploy-staging:
+  name: Deploy to Staging
+  runs-on: ubuntu-latest
+  needs: [test-backend, build-docker]
+  if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+  
+  steps:
+    - name: Deploy to Staging
+      run: |
+        aws s3 sync frontend/ s3://digitrans-crm-staging/
+```
+
+### Ajouter des notifications Slack
+
+```yaml
+- name: Notify Slack
   uses: 8398a7/action-slack@v3
   with:
     status: ${{ job.status }}
-    text: 'Pipeline ${{ job.status }}'
     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
   if: always()
 ```
 
-### Email (optionnel)
+### Activer le déploiement manuel
 
-GitHub envoie automatiquement des emails en cas d'échec.
-
-## Sécurité
-
-### Bonnes Pratiques
-
-✅ Utiliser des secrets pour les credentials
-✅ Ne jamais commit de tokens ou mots de passe
-✅ Limiter les permissions des tokens AWS
-✅ Utiliser des environnements GitHub pour la production
-✅ Activer la protection de branche sur `main`
-
-### Scan de Sécurité
-
-Le pipeline inclut :
-- **Bandit** : Détection de vulnérabilités Python
-- **Safety** : Vérification des dépendances
-- **Dependabot** : Mises à jour automatiques (à activer)
-
-## Environnements GitHub
-
-Créer des environnements pour séparer dev/staging/prod :
-
-1. **Settings** → **Environments** → **New environment**
-2. Créer `production`, `staging`, `development`
-3. Configurer les secrets par environnement
-4. Ajouter des règles de protection (approbation requise)
-
-## Rollback
-
-En cas de problème après déploiement :
-
-```bash
-# Revenir au commit précédent
-git revert HEAD
-git push origin main
-
-# Ou redéployer une version spécifique
-gh workflow run ci-cd.yml --ref <commit-sha>
+```yaml
+deploy-production:
+  environment:
+    name: production
+    url: https://crm.agrocam.cm
+  # Nécessite une approbation manuelle
 ```
 
-## Monitoring
+## 📈 Métriques
 
-### GitHub Actions Insights
+### Temps d'Exécution Moyen
 
-- **Actions** → **Workflows** → **CI/CD Pipeline**
-- Voir les statistiques d'exécution
-- Temps moyen, taux de succès, etc.
+- **Total** : ~8 minutes
+- Tests : 2 min
+- Lint : 1 min
+- Build : 3 min
+- Deploy : 2 min
 
-### Codecov
+### Taux de Succès
 
-- Voir la couverture de code sur https://codecov.io
-- Intégration automatique avec le pipeline
+- **Objectif** : > 95%
+- **Actuel** : À mesurer
 
-## Troubleshooting
+## 🔗 Ressources
 
-### Erreur : "PostgreSQL connection refused"
+- **GitHub Actions** : https://docs.github.com/en/actions
+- **AWS Actions** : https://github.com/aws-actions
+- **Codecov** : https://codecov.io/
 
-**Solution** : Vérifier que le service PostgreSQL est bien démarré dans le workflow.
+## 📝 Changelog
 
-### Erreur : "AWS credentials not found"
+### v1.0.0 (2025-01-20)
+- ✅ Pipeline initial
+- ✅ Tests backend
+- ✅ Linting et sécurité
+- ✅ Build Docker
+- ✅ Déploiement AWS
 
-**Solution** : Vérifier que les secrets `AWS_ACCESS_KEY_ID` et `AWS_SECRET_ACCESS_KEY` sont configurés.
-
-### Erreur : "S3 bucket not found"
-
-**Solution** : Créer le bucket S3 ou vérifier le nom dans les secrets.
-
-### Tests échouent localement mais pas en CI
-
-**Solution** : Vérifier les variables d'environnement et la version de Python.
-
-## Améliorations Futures
-
-- [ ] Ajouter des tests frontend (Jest, Cypress)
-- [ ] Déploiement multi-région
-- [ ] Tests de charge (Locust, k6)
-- [ ] Scan de conteneurs (Trivy)
-- [ ] Déploiement Blue/Green
-- [ ] Rollback automatique en cas d'erreur
-
-## Ressources
-
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [AWS Actions](https://github.com/aws-actions)
-- [Codecov Action](https://github.com/codecov/codecov-action)
+### v1.1.0 (2025-01-21)
+- ✅ Correction condition déploiement (`if: false` → condition correcte)
+- ✅ Ajout documentation dépannage
 
 ---
 
+**Maintenu par** : CAMTECH SOLUTIONS S.A.  
+**Contact** : devops@camtech-solutions.cm  
 **Dernière mise à jour** : Janvier 2025
