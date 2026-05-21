@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: digitrans-crm
+  labels:
+    name: digitrans-crm
+    project: digitrans-cm
+    environment: production

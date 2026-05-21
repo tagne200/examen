@@ -216,3 +216,31 @@ variable "additional_tags" {
   type        = map(string)
   default     = {}
 }
+
+# ============================================
+# Variables EKS (Kubernetes)
+# ============================================
+
+variable "eks_instance_type" {
+  description = "Type d'instance pour les nodes EKS"
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "eks_desired_nodes" {
+  description = "Nombre désiré de nodes EKS"
+  type        = number
+  default     = 2
+}
+
+variable "eks_min_nodes" {
+  description = "Nombre minimum de nodes EKS"
+  type        = number
+  default     = 1
+}
+
+variable "eks_max_nodes" {
+  description = "Nombre maximum de nodes EKS"
+  type        = number
+  default     = 5
+}

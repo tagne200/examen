@@ -48,3 +48,9 @@ additional_tags = {
   Team       = "DevOps"
   Backup     = "false"
 }
+
+# EKS Configuration
+eks_instance_type  = "t3.small"
+eks_desired_nodes  = 1
+eks_min_nodes      = 1
+eks_max_nodes      = 2
