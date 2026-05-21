@@ -1,6 +1,12 @@
 """
 Tests unitaires pour l'API CRM DIGITRANS-CM
 """
+import sys
+import os
+
+# Ajouter le répertoire parent au path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
