@@ -7,6 +7,19 @@ import os
 # Ajouter le répertoire parent au path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Charger les variables d'environnement de test
+from dotenv import load_dotenv
+test_env_path = os.path.join(os.path.dirname(__file__), '..', '.env.test')
+if os.path.exists(test_env_path):
+    load_dotenv(test_env_path)
+else:
+    # Variables par défaut pour CI/CD
+    os.environ.setdefault('DATABASE_URL', 'postgresql://test:test@localhost:5432/test_db')
+    os.environ.setdefault('AZURE_CLIENT_ID', 'test-client-id')
+    os.environ.setdefault('AZURE_CLIENT_SECRET', 'test-secret')
+    os.environ.setdefault('AZURE_TENANT_ID', 'test-tenant-id')
+    os.environ.setdefault('SECRET_KEY', 'test-secret-key')
+
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
