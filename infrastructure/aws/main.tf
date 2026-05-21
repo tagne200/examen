@@ -107,27 +107,6 @@ output "rds_database_name" {
   value       = aws_db_instance.main.db_name
 }
 
-output "s3_bucket_name" {
-  description = "Nom du bucket S3 frontend"
-  value       = aws_s3_bucket.frontend.id
-}
-
-output "cloudfront_distribution_id" {
-  description = "ID de la distribution CloudFront"
-  value       = aws_cloudfront_distribution.frontend.id
-}
-
-output "cloudfront_domain_name" {
-  description = "Nom de domaine CloudFront"
-  value       = aws_cloudfront_distribution.frontend.domain_name
-}
-
-output "elasticache_endpoint" {
-  description = "Endpoint ElastiCache Redis"
-  value       = aws_elasticache_cluster.main.cache_nodes[0].address
-  sensitive   = true
-}
-
 output "db_password_secret_arn" {
   description = "ARN du secret contenant le mot de passe DB"
   value       = aws_secretsmanager_secret.db_password.arn

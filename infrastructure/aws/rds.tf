@@ -22,11 +22,11 @@ resource "aws_security_group" "rds" {
 
   # Autoriser PostgreSQL depuis Lambda (si dans VPC)
   ingress {
-    description     = "PostgreSQL from Lambda"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.lambda.id]
+    description = "PostgreSQL from private subnets"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = var.private_subnets
   }
 
   egress {
@@ -123,7 +123,7 @@ resource "aws_secretsmanager_secret" "db_password" {
 resource "aws_secretsmanager_secret_version" "db_password" {
   secret_id = aws_secretsmanager_secret.db_password.id
   secret_string = jsonencode({
-    username = var.db_username
+    username = "dbadmin"
     password = random_password.db_password.result
     engine   = "postgres"
     host     = aws_db_instance.main.address
@@ -139,7 +139,7 @@ resource "aws_secretsmanager_secret_version" "db_password" {
 resource "aws_db_instance" "main" {
   identifier     = "${local.full_name}-db"
   engine         = "postgres"
-  engine_version = "15.4"
+  engine_version = "15"
 
   # Instance configuration
   instance_class    = var.db_instance_class
@@ -149,7 +149,7 @@ resource "aws_db_instance" "main" {
 
   # Database configuration
   db_name  = var.db_name
-  username = var.db_username
+  username = "dbadmin"
   password = random_password.db_password.result
 
   # Network configuration
