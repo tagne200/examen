@@ -1,0 +1,39 @@
+# FastAPI Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+alembic==1.12.1
+
+# Azure AD Authentication
+msal==1.25.0
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
+
+# Security
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.0
+
+# HTTP & CORS
+httpx==0.25.2
+python-cors==1.0.0
+
+# Monitoring & Logging
+opencensus-ext-azure==1.1.13
+opencensus-ext-logging==0.1.1
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Redis Cache (optional)
+redis==5.0.1
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
