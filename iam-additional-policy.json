@@ -32,6 +32,35 @@
         "iam:PassRole"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "DynamoDBTerraformStateLock",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": "arn:aws:dynamodb:af-south-1:*:table/digitrans-terraform-locks"
+    },
+    {
+      "Sid": "S3TerraformState",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketVersioning",
+        "s3:GetEncryptionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:s3:::digitrans-terraform-state-*",
+        "arn:aws:s3:::digitrans-terraform-state-*/*"
+      ]
     }
   ]
 }

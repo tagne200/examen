@@ -20,9 +20,9 @@ terraform {
   # Backend S3 pour stocker l'état Terraform
   # bucket et key sont passés via -backend-config dans le pipeline CI/CD
   backend "s3" {
-    region         = "af-south-1"
-    encrypt        = true
-    dynamodb_table = "digitrans-terraform-locks"
+    region  = "af-south-1"
+    encrypt = true
+    # dynamodb_table = "digitrans-terraform-locks"  # réactiver après avoir appliqué iam-additional-policy.json
   }
 }
 
