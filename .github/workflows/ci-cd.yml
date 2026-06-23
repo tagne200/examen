@@ -259,12 +259,10 @@ jobs:
           fi
 
           # ── Sélection du VPC de référence ────────────────────────────────────
-          # Priorité : VPC de l'instance RDS (si elle existe) → le plus stable
-          # Fallback : VPC avec le plus de subnets parmi ceux tagués
-
+          # Priorité : VPC de l'instance RDS → seul VPC cohérent avec le subnet group et la DB
           VPC_ID=""
+          RDS_STATUS=""
 
-          # 1. Chercher via l'instance RDS
           RDS_STATUS=$(aws rds describe-db-instances \
             --db-instance-identifier "digitrans-crm-production-db" \
             --region "$AWS_REGION" \
@@ -279,44 +277,63 @@ jobs:
             echo "VPC de référence (depuis RDS) : $VPC_ID"
           fi
 
-          # 2. Fallback : VPC taggé avec le plus de subnets
+          # Fallback : VPC taggé avec le plus de subnets
           if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
             mapfile -t ALL_VPCS < <(aws ec2 describe-vpcs \
               --filters "Name=tag:Project,Values=digitrans-crm" \
                         "Name=tag:Environment,Values=production" \
               --query 'Vpcs[*].VpcId' --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
-            echo "VPCs trouvés par tag : ${#ALL_VPCS[@]}"
             MAX=0
             for v in "${ALL_VPCS[@]}"; do
               C=$(aws ec2 describe-subnets \
                 --filters "Name=vpc-id,Values=$v" \
                 --query 'length(Subnets)' --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
-              echo "  $v → $C subnets"
               if [ "$C" -gt "$MAX" ]; then MAX=$C; VPC_ID=$v; fi
             done
-            echo "VPC de référence (par tags) : $VPC_ID"
+            echo "VPC de référence (par tags, fallback) : $VPC_ID"
           fi
 
-          # ── Import des ressources réseau dans le VPC de référence ────────────
+          # ── Vérification cohérence : purge si VPC en état ≠ VPC de référence ─
+          if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+            if terraform state show "aws_vpc.main" &>/dev/null; then
+              STATE_VPC=$(terraform state show "aws_vpc.main" 2>/dev/null \
+                | grep -E '^\s+id\s+=' | sed 's/.*= *"\(.*\)"/\1/')
+              if [ -n "$STATE_VPC" ] && [ "$STATE_VPC" != "$VPC_ID" ]; then
+                echo "INCOHÉRENCE DÉTECTÉE : VPC en état ($STATE_VPC) ≠ VPC référence ($VPC_ID)"
+                echo "Purge des ressources réseau de l'état Terraform pour réimport cohérent..."
+                for res in \
+                  "aws_vpc.main" \
+                  "aws_internet_gateway.main" \
+                  "aws_subnet.public[0]" "aws_subnet.public[1]" \
+                  "aws_subnet.private[0]" "aws_subnet.private[1]" \
+                  "aws_nat_gateway.main[0]" "aws_nat_gateway.main[1]" \
+                  "aws_eip.nat[0]" "aws_eip.nat[1]" \
+                  "aws_security_group.rds" \
+                  "aws_db_subnet_group.main"; do
+                  terraform state rm "$res" 2>/dev/null || true
+                done
+                echo "Purge terminée — réimport depuis VPC $VPC_ID"
+              else
+                echo "VPC en état cohérent ($STATE_VPC) — pas de purge nécessaire"
+              fi
+            fi
+          fi
 
+          # ── Import des ressources réseau depuis le VPC de référence ──────────
           if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
             import_if_needed "aws_vpc.main" "$VPC_ID"
 
-            # DB Subnet Group : appartient forcément au VPC de référence (on a choisi le VPC depuis lui)
+            # DB Subnet Group (dans le même VPC que la RDS)
             SG_VPC=$(aws rds describe-db-subnet-groups \
               --db-subnet-group-name "digitrans-crm-production-db-subnet-group" \
               --region "$AWS_REGION" \
               --query 'DBSubnetGroups[0].VpcId' --output text 2>/dev/null || echo "")
-            if [ -z "$SG_VPC" ] || [ "$SG_VPC" = "None" ]; then
-              echo "INFO db_subnet_group : n'existe pas, sera créé par Terraform"
-            else
+            [ -n "$SG_VPC" ] && [ "$SG_VPC" != "None" ] && \
               import_if_needed "aws_db_subnet_group.main" "digitrans-crm-production-db-subnet-group"
-            fi
 
             # Instance RDS
-            if [ -n "$RDS_STATUS" ] && [ "$RDS_STATUS" != "None" ]; then
+            [ -n "$RDS_STATUS" ] && [ "$RDS_STATUS" != "None" ] && \
               import_if_needed "aws_db_instance.main" "digitrans-crm-production-db"
-            fi
 
             # Internet Gateway
             IGW_ID=$(aws ec2 describe-internet-gateways \
@@ -326,7 +343,7 @@ jobs:
             [ -n "$IGW_ID" ] && [ "$IGW_ID" != "None" ] && \
               import_if_needed "aws_internet_gateway.main" "$IGW_ID"
 
-            # Subnets publics
+            # Subnets publics (du VPC de référence uniquement)
             mapfile -t PUBLIC_SUBNETS < <(aws ec2 describe-subnets \
               --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Type,Values=Public" \
               --query 'Subnets[*].SubnetId' --output text --region "$AWS_REGION" \
@@ -335,7 +352,7 @@ jobs:
               import_if_needed "aws_subnet.public[$i]" "${PUBLIC_SUBNETS[$i]}"
             done
 
-            # Subnets privés
+            # Subnets privés (du VPC de référence uniquement)
             mapfile -t PRIVATE_SUBNETS < <(aws ec2 describe-subnets \
               --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Type,Values=Private" \
               --query 'Subnets[*].SubnetId' --output text --region "$AWS_REGION" \
@@ -344,7 +361,7 @@ jobs:
               import_if_needed "aws_subnet.private[$i]" "${PRIVATE_SUBNETS[$i]}"
             done
 
-            # NAT Gateways
+            # NAT Gateways (du VPC de référence uniquement)
             mapfile -t NAT_GWS < <(aws ec2 describe-nat-gateways \
               --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
               --query 'NatGateways[*].NatGatewayId' --output text --region "$AWS_REGION" \
@@ -353,14 +370,14 @@ jobs:
               import_if_needed "aws_nat_gateway.main[$i]" "${NAT_GWS[$i]}"
             done
 
-            # Elastic IPs des NAT Gateways
-            mapfile -t EIPS < <(aws ec2 describe-addresses \
-              --filters "Name=tag:Project,Values=digitrans-crm" \
-                        "Name=tag:Environment,Values=production" \
-              --query 'Addresses[*].AllocationId' --output text --region "$AWS_REGION" \
-              | tr '\t' '\n')
-            for i in "${!EIPS[@]}"; do
-              import_if_needed "aws_eip.nat[$i]" "${EIPS[$i]}"
+            # EIPs : uniquement celles des NAT Gateways du VPC de référence
+            # (évite d'importer les EIPs orphelines des runs précédents)
+            mapfile -t NAT_EIPS < <(aws ec2 describe-nat-gateways \
+              --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
+              --query 'NatGateways[*].NatGatewayAddresses[0].AllocationId' \
+              --output text --region "$AWS_REGION" | tr '\t' '\n')
+            for i in "${!NAT_EIPS[@]}"; do
+              import_if_needed "aws_eip.nat[$i]" "${NAT_EIPS[$i]}"
             done
 
             # Security Group RDS
@@ -370,6 +387,23 @@ jobs:
               --query 'SecurityGroups[0].GroupId' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
             [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ] && \
               import_if_needed "aws_security_group.rds" "$SG_ID"
+          fi
+
+          # ── EKS Cluster et Node Group ─────────────────────────────────────────
+          EKS_STATUS=$(aws eks describe-cluster \
+            --name "digitrans-crm-cluster" \
+            --region "$AWS_REGION" \
+            --query 'cluster.status' --output text 2>/dev/null || echo "")
+          if [ -n "$EKS_STATUS" ] && [ "$EKS_STATUS" != "None" ]; then
+            echo "Cluster EKS trouvé (statut: $EKS_STATUS)"
+            import_if_needed "aws_eks_cluster.main" "digitrans-crm-cluster"
+            NG_STATUS=$(aws eks describe-nodegroup \
+              --cluster-name "digitrans-crm-cluster" \
+              --nodegroup-name "digitrans-crm-node-group" \
+              --region "$AWS_REGION" \
+              --query 'nodegroup.status' --output text 2>/dev/null || echo "")
+            [ -n "$NG_STATUS" ] && [ "$NG_STATUS" != "None" ] && \
+              import_if_needed "aws_eks_node_group.main" "digitrans-crm-cluster:digitrans-crm-node-group"
           fi
 
       # ── Étape 4 : Plan + Apply ────────────────────────────────────────────
