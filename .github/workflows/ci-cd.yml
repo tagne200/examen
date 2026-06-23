@@ -278,26 +278,25 @@ jobs:
         run: |
           cd infrastructure/aws
 
+          # Cache de l'état : 1 seul appel distant au lieu d'un par ressource
+          STATE_LIST=$(terraform state list 2>/dev/null || echo "")
+
           import_if_needed() {
             local addr="$1"
             local id="$2"
-            if terraform state show "$addr" &>/dev/null; then
+            if printf '%s\n' "$STATE_LIST" | grep -qxF "$addr"; then
               echo "SKIP (already in state): $addr"
             else
               echo "IMPORTING: $addr  =>  $id"
-              terraform import -var-file="$TFVARS" "$addr" "$id" || true
+              if terraform import -var-file="$TFVARS" "$addr" "$id"; then
+                STATE_LIST=$(printf '%s\n%s' "$STATE_LIST" "$addr")
+              fi
             fi
           }
 
           # ── Ressources à noms fixes (depuis les erreurs du log) ──────────
           import_if_needed "aws_ecr_repository.crm_api" \
             "digitrans-crm-crm-api"
-
-          import_if_needed "aws_iam_role.eks_cluster" \
-            "digitrans-crm-eks-cluster-role"
-
-          import_if_needed "aws_iam_role.eks_nodes" \
-            "digitrans-crm-eks-node-role"
 
           import_if_needed "aws_iam_role.rds_monitoring[0]" \
             "digitrans-crm-production-rds-monitoring-role"
@@ -359,7 +358,7 @@ jobs:
 
           # ── Vérification cohérence : purge si VPC en état ≠ VPC de référence ─
           if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-            if terraform state show "aws_vpc.main" &>/dev/null; then
+            if printf '%s\n' "$STATE_LIST" | grep -qxF "aws_vpc.main"; then
               STATE_VPC=$(terraform state show "aws_vpc.main" 2>/dev/null \
                 | grep -E '^\s+id\s+=' | sed 's/.*= *"\(.*\)"/\1/')
               if [ -n "$STATE_VPC" ] && [ "$STATE_VPC" != "$VPC_ID" ]; then
@@ -453,34 +452,30 @@ jobs:
               import_if_needed "aws_security_group.rds" "$SG_ID"
 
             # ── Nettoyage des associations de route table orphelines ──────────
-            # Les subnets privés peuvent rester associés à des route tables d'anciens
-            # runs (non gérées par Terraform) → conflit "Resource.AlreadyAssociated".
-            # On dissocie les associations explicites non gérées par Terraform.
-            mapfile -t PRIV_SUBNETS_CLEAN < <(aws ec2 describe-subnets \
-              --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Type,Values=Private" \
-              --query 'Subnets[*].SubnetId' --output text --region "$AWS_REGION" \
-              | tr '\t' '\n')
-            for SUBNET in "${PRIV_SUBNETS_CLEAN[@]}"; do
-              [ -z "$SUBNET" ] && continue
-              # Récupérer les IDs d'association explicite (hors main) pour ce subnet
-              mapfile -t ASSOCS < <(aws ec2 describe-route-tables \
-                --filters "Name=association.subnet-id,Values=$SUBNET" \
-                --query "RouteTables[].Associations[?SubnetId=='$SUBNET' && Main==\`false\`].RouteTableAssociationId" \
-                --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
-              for A in "${ASSOCS[@]}"; do
-                [ -z "$A" ] && continue
-                # Ne pas dissocier si déjà géré par Terraform
-                if terraform state list 2>/dev/null | grep -q "aws_route_table_association"; then
-                  if terraform state show "aws_route_table_association.private[0]" 2>/dev/null | grep -q "$A" || \
-                     terraform state show "aws_route_table_association.private[1]" 2>/dev/null | grep -q "$A"; then
-                    echo "Association $A déjà gérée par Terraform — conservée"
-                    continue
-                  fi
-                fi
-                echo "Dissociation de l'association orpheline $A (subnet $SUBNET)"
-                aws ec2 disassociate-route-table --association-id "$A" --region "$AWS_REGION" 2>/dev/null || true
+            # Uniquement si Terraform ne gère pas DÉJÀ les associations privées
+            # (sinon elles sont stables, on n'y touche pas → évite de casser le réseau).
+            if printf '%s\n' "$STATE_LIST" | grep -qxF "aws_route_table_association.private[0]" \
+               && printf '%s\n' "$STATE_LIST" | grep -qxF "aws_route_table_association.private[1]"; then
+              echo "Associations de route table privées déjà gérées par Terraform — nettoyage ignoré."
+            else
+              echo "Associations privées absentes de l'état — recherche d'orphelines à dissocier..."
+              mapfile -t PRIV_SUBNETS_CLEAN < <(aws ec2 describe-subnets \
+                --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Type,Values=Private" \
+                --query 'Subnets[*].SubnetId' --output text --region "$AWS_REGION" \
+                | tr '\t' '\n')
+              for SUBNET in "${PRIV_SUBNETS_CLEAN[@]}"; do
+                [ -z "$SUBNET" ] && continue
+                mapfile -t ASSOCS < <(aws ec2 describe-route-tables \
+                  --filters "Name=association.subnet-id,Values=$SUBNET" \
+                  --query "RouteTables[].Associations[?SubnetId=='$SUBNET' && Main==\`false\`].RouteTableAssociationId" \
+                  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+                for A in "${ASSOCS[@]}"; do
+                  [ -z "$A" ] && continue
+                  echo "Dissociation de l'association orpheline $A (subnet $SUBNET)"
+                  aws ec2 disassociate-route-table --association-id "$A" --region "$AWS_REGION" 2>/dev/null || true
+                done
               done
-            done
+            fi
           fi
 
           # ── EKS supprimé : migration vers ECS Fargate ─────────────────────────
