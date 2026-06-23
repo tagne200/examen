@@ -154,6 +154,43 @@ jobs:
           terraform_version: 1.7.5
           terraform_wrapper: false
 
+      # ── Étape 0 : permissions IAM pour ECS / ALB / Logs (policy inline) ────
+      # Terraform crée des ressources ECS, ELB et CloudWatch Logs. On accorde
+      # ces permissions via une policy inline (ne compte pas dans le quota de
+      # 10 policies gérées). L'utilisateur possède IAMFullAccess.
+      - name: Ensure CI user IAM permissions (ECS/ALB/Logs)
+        run: |
+          set -e
+          CI_USER="github-actions-digitrans"
+          echo "Ajout de la policy inline ECS/ALB/Logs à $CI_USER..."
+          aws iam put-user-policy \
+            --user-name "$CI_USER" \
+            --policy-name "digitrans-ecs-deploy" \
+            --policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Action": [
+                  "ecs:*",
+                  "elasticloadbalancing:*",
+                  "logs:*",
+                  "application-autoscaling:*",
+                  "ecr:*"
+                ],
+                "Resource": "*"
+              }]
+            }' && echo "  → policy inline ajoutée" || echo "  ⚠️ échec (vérifier IAMFullAccess)"
+
+          # Attendre la propagation (test réel via ecs list-clusters)
+          for i in $(seq 1 18); do
+            if aws ecs list-clusters --region af-south-1 &>/dev/null; then
+              echo "  → permissions ECS actives (après $((i*5))s)"
+              break
+            fi
+            echo "  attente propagation IAM... (${i}/18)"
+            sleep 5
+          done
+
       # ── Étape 1 : créer le bucket S3 + table DynamoDB si absents ──────────
       - name: Bootstrap Terraform state backend
         run: |
@@ -419,27 +456,9 @@ jobs:
             done
           fi
 
-          # ── EKS Cluster et Node Group ─────────────────────────────────────────
-          EKS_STATUS=$(aws eks describe-cluster \
-            --name "digitrans-crm-cluster" \
-            --region "$AWS_REGION" \
-            --query 'cluster.status' --output text 2>/dev/null || echo "")
-          if [ -n "$EKS_STATUS" ] && [ "$EKS_STATUS" != "None" ]; then
-            echo "Cluster EKS trouvé (statut: $EKS_STATUS)"
-            import_if_needed "aws_eks_cluster.main" "digitrans-crm-cluster"
-            NG_STATUS=$(aws eks describe-nodegroup \
-              --cluster-name "digitrans-crm-cluster" \
-              --nodegroup-name "digitrans-crm-node-group" \
-              --region "$AWS_REGION" \
-              --query 'nodegroup.status' --output text 2>/dev/null || echo "")
-            if [ -n "$NG_STATUS" ] && [ "$NG_STATUS" != "None" ]; then
-              import_if_needed "aws_eks_node_group.main" "digitrans-crm-cluster:digitrans-crm-node-group"
-            else
-              echo "INFO node group EKS : n'existe pas, sera créé par Terraform"
-            fi
-          else
-            echo "INFO cluster EKS : non trouvé via l'API"
-          fi
+          # ── EKS supprimé : migration vers ECS Fargate ─────────────────────────
+          # Les ressources EKS encore en état seront détruites par Terraform
+          # (config retirée). Aucun import EKS ne doit avoir lieu.
 
           # ── Retirer les alarmes CloudWatch de l'état Terraform ────────────────
           # Elles ne sont plus définies dans rds.tf (permission ListTagsForResource
@@ -503,92 +522,73 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-  # ============= JOB 5 : DEPLOY TO KUBERNETES (EKS) =============
-  deploy-kubernetes:
-    name: Deploy to Kubernetes
+  # ============= JOB 5 : DEPLOY TO ECS FARGATE =============
+  deploy-ecs:
+    name: Deploy to ECS Fargate
     runs-on: ubuntu-latest
     needs: [build-docker]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
+
+    env:
+      CLUSTER: digitrans-crm-cluster
+      SERVICE: digitrans-crm-api-service
+      AWS_REGION: af-south-1
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: af-south-1
-      
-      - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig --name digitrans-crm-cluster --region af-south-1
-      
-      - name: Deploy to Kubernetes
-        env:
-          IMAGE_TAG: ${{ github.sha }}
+
+      - name: Force new deployment (pull de l'image :latest fraîchement poussée)
         run: |
           set -e
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          REGION=af-south-1
-          IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/digitrans-crm-api:${IMAGE_TAG}"
+          echo "Déclenchement d'un nouveau déploiement du service ECS..."
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --force-new-deployment \
+            --region "$AWS_REGION" \
+            --query 'service.{name:serviceName,desired:desiredCount,status:status}' \
+            --output table
 
-          cd infrastructure/kubernetes
-
-          # 1. Namespace
-          kubectl apply -f namespace.yaml
-
-          # 2. Secret applicatif (DATABASE_URL construit depuis Secrets Manager)
-          SECRET_JSON=$(aws secretsmanager get-secret-value \
-            --secret-id "digitrans-crm-production/db/password" \
-            --region "$REGION" --query SecretString --output text 2>/dev/null || echo "")
-          if [ -n "$SECRET_JSON" ]; then
-            DB_USER=$(echo "$SECRET_JSON" | jq -r .username)
-            DB_PASS=$(echo "$SECRET_JSON" | jq -r .password)
-            DB_HOST=$(echo "$SECRET_JSON" | jq -r .host)
-            DB_PORT=$(echo "$SECRET_JSON" | jq -r .port)
-            DB_NAME=$(echo "$SECRET_JSON" | jq -r .dbname)
-            DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-          else
-            echo "⚠️ Secret RDS introuvable — DATABASE_URL placeholder"
-            DATABASE_URL="postgresql://dbadmin:changeme@localhost:5432/crm_prod_db"
-          fi
-
-          kubectl create secret generic crm-secrets \
-            --namespace digitrans-crm \
-            --from-literal=database-url="$DATABASE_URL" \
-            --from-literal=azure-tenant-id="dev-tenant-id" \
-            --from-literal=azure-client-id="dev-client-id" \
-            --from-literal=azure-client-secret="dev-secret" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          # 3. Déploiement + Service + HPA (avec substitution de l'image)
-          sed "s#ACCOUNT_ID.dkr.ecr.af-south-1.amazonaws.com/digitrans-crm-api:latest#${IMAGE}#g" \
-            deployment.yaml | kubectl apply -f -
-
-          # 4. Forcer l'image exacte (sécurité) et attendre le rollout
-          kubectl set image deployment/crm-api crm-api="${IMAGE}" -n digitrans-crm
-
-          # Attendre le rollout ; en cas d'échec, afficher un diagnostic complet
-          if ! kubectl rollout status deployment/crm-api -n digitrans-crm --timeout=300s; then
-            echo "════════════ DIAGNOSTIC ROLLOUT ════════════"
-            echo "── Pods ──"
-            kubectl get pods -n digitrans-crm -o wide
-            echo "── Events (triés) ──"
-            kubectl get events -n digitrans-crm --sort-by=.lastTimestamp | tail -30
-            echo "── Describe des pods ──"
-            for POD in $(kubectl get pods -n digitrans-crm -o name); do
-              echo "··· $POD ···"
-              kubectl describe "$POD" -n digitrans-crm | tail -40
-            done
-            echo "── Logs des pods (si dispo) ──"
-            for POD in $(kubectl get pods -n digitrans-crm -o name); do
-              echo "··· logs $POD ···"
-              kubectl logs "$POD" -n digitrans-crm --all-containers --tail=50 2>/dev/null || echo "(pas de logs)"
-            done
-            echo "════════════════════════════════════════════"
+      - name: Attendre la stabilité du service
+        run: |
+          set -e
+          echo "Attente de la stabilité du service (tâches saines derrière l'ALB)..."
+          if ! aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "$AWS_REGION"; then
+            echo "════════════ DIAGNOSTIC ECS ════════════"
+            echo "── Service ──"
+            aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+              --region "$AWS_REGION" \
+              --query 'services[0].{status:status,running:runningCount,desired:desiredCount,events:events[:5]}' \
+              --output json || true
+            echo "── Tâches (statut + raison d'arrêt) ──"
+            TASKS=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" \
+              --region "$AWS_REGION" --query 'taskArns' --output text || echo "")
+            if [ -n "$TASKS" ]; then
+              aws ecs describe-tasks --cluster "$CLUSTER" --tasks $TASKS \
+                --region "$AWS_REGION" \
+                --query 'tasks[*].{lastStatus:lastStatus,health:healthStatus,stopped:stoppedReason,containers:containers[*].{name:name,reason:reason,exitCode:exitCode}}' \
+                --output json || true
+            fi
+            echo "════════════════════════════════════════"
             exit 1
+          fi
+          echo "✅ Service ECS stable."
+
+      - name: Afficher l'URL publique de l'API
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names digitrans-crm-alb --region "$AWS_REGION" \
+            --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+          if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+            echo "🌐 API accessible : http://${ALB_DNS}/health"
           fi
 
       - name: Deploy Frontend to S3
@@ -602,19 +602,12 @@ jobs:
           else
             echo "S3_BUCKET_NAME non défini — étape frontend ignorée."
           fi
-      
-      - name: Invalidate CloudFront cache
-        if: false  # Désactivé temporairement - CloudFront pas encore créé
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --paths "/*"
 
   # ============= JOB 6 : NOTIFY =============
   notify:
     name: Notification
     runs-on: ubuntu-latest
-    needs: [deploy-kubernetes]
+    needs: [deploy-ecs]
     if: always()
     
     steps:
