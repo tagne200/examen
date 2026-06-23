@@ -402,9 +402,17 @@ jobs:
               --nodegroup-name "digitrans-crm-node-group" \
               --region "$AWS_REGION" \
               --query 'nodegroup.status' --output text 2>/dev/null || echo "")
-            [ -n "$NG_STATUS" ] && [ "$NG_STATUS" != "None" ] && \
+            if [ -n "$NG_STATUS" ] && [ "$NG_STATUS" != "None" ]; then
               import_if_needed "aws_eks_node_group.main" "digitrans-crm-cluster:digitrans-crm-node-group"
+            else
+              echo "INFO node group EKS : n'existe pas, sera créé par Terraform"
+            fi
+          else
+            echo "INFO cluster EKS : non trouvé via l'API"
           fi
+
+          echo "Import des ressources existantes terminé."
+          exit 0
 
       # ── Étape 4 : Plan + Apply ────────────────────────────────────────────
       - name: Terraform Plan
