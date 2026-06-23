@@ -221,6 +221,12 @@ variable "additional_tags" {
 # Variables EKS (Kubernetes)
 # ============================================
 
+variable "eks_cluster_version" {
+  description = "Version Kubernetes du cluster EKS (doit être supportée dans la région)"
+  type        = string
+  default     = "1.30"
+}
+
 variable "eks_instance_type" {
   description = "Type d'instance pour les nodes EKS"
   type        = string

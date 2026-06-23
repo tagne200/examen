@@ -154,6 +154,22 @@ jobs:
           terraform_version: 1.7.5
           terraform_wrapper: false
 
+      # ── Étape 0 : garantir les permissions IAM nécessaires au CI ──────────
+      # L'utilisateur github-actions-digitrans possède IAMFullAccess, il peut
+      # donc s'attribuer les policies manquantes (idempotent).
+      - name: Ensure CI user IAM permissions
+        run: |
+          CI_USER="github-actions-digitrans"
+          for POLICY_ARN in \
+            "arn:aws:iam::aws:policy/CloudWatchFullAccess"; do
+            echo "Attaching $POLICY_ARN à $CI_USER (idempotent)"
+            aws iam attach-user-policy \
+              --user-name "$CI_USER" \
+              --policy-arn "$POLICY_ARN" 2>/dev/null \
+              && echo "  → OK" \
+              || echo "  → déjà attaché ou non modifiable (ignoré)"
+          done
+
       # ── Étape 1 : créer le bucket S3 + table DynamoDB si absents ──────────
       - name: Bootstrap Terraform state backend
         run: |
@@ -387,6 +403,36 @@ jobs:
               --query 'SecurityGroups[0].GroupId' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
             [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ] && \
               import_if_needed "aws_security_group.rds" "$SG_ID"
+
+            # ── Nettoyage des associations de route table orphelines ──────────
+            # Les subnets privés peuvent rester associés à des route tables d'anciens
+            # runs (non gérées par Terraform) → conflit "Resource.AlreadyAssociated".
+            # On dissocie les associations explicites non gérées par Terraform.
+            mapfile -t PRIV_SUBNETS_CLEAN < <(aws ec2 describe-subnets \
+              --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Type,Values=Private" \
+              --query 'Subnets[*].SubnetId' --output text --region "$AWS_REGION" \
+              | tr '\t' '\n')
+            for SUBNET in "${PRIV_SUBNETS_CLEAN[@]}"; do
+              [ -z "$SUBNET" ] && continue
+              # Récupérer les IDs d'association explicite (hors main) pour ce subnet
+              mapfile -t ASSOCS < <(aws ec2 describe-route-tables \
+                --filters "Name=association.subnet-id,Values=$SUBNET" \
+                --query "RouteTables[].Associations[?SubnetId=='$SUBNET' && Main==\`false\`].RouteTableAssociationId" \
+                --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+              for A in "${ASSOCS[@]}"; do
+                [ -z "$A" ] && continue
+                # Ne pas dissocier si déjà géré par Terraform
+                if terraform state list 2>/dev/null | grep -q "aws_route_table_association"; then
+                  if terraform state show "aws_route_table_association.private[0]" 2>/dev/null | grep -q "$A" || \
+                     terraform state show "aws_route_table_association.private[1]" 2>/dev/null | grep -q "$A"; then
+                    echo "Association $A déjà gérée par Terraform — conservée"
+                    continue
+                  fi
+                fi
+                echo "Dissociation de l'association orpheline $A (subnet $SUBNET)"
+                aws ec2 disassociate-route-table --association-id "$A" --region "$AWS_REGION" 2>/dev/null || true
+              done
+            done
           fi
 
           # ── EKS Cluster et Node Group ─────────────────────────────────────────
