@@ -569,7 +569,27 @@ jobs:
 
           # 4. Forcer l'image exacte (sécurité) et attendre le rollout
           kubectl set image deployment/crm-api crm-api="${IMAGE}" -n digitrans-crm
-          kubectl rollout status deployment/crm-api -n digitrans-crm --timeout=300s
+
+          # Attendre le rollout ; en cas d'échec, afficher un diagnostic complet
+          if ! kubectl rollout status deployment/crm-api -n digitrans-crm --timeout=300s; then
+            echo "════════════ DIAGNOSTIC ROLLOUT ════════════"
+            echo "── Pods ──"
+            kubectl get pods -n digitrans-crm -o wide
+            echo "── Events (triés) ──"
+            kubectl get events -n digitrans-crm --sort-by=.lastTimestamp | tail -30
+            echo "── Describe des pods ──"
+            for POD in $(kubectl get pods -n digitrans-crm -o name); do
+              echo "··· $POD ···"
+              kubectl describe "$POD" -n digitrans-crm | tail -40
+            done
+            echo "── Logs des pods (si dispo) ──"
+            for POD in $(kubectl get pods -n digitrans-crm -o name); do
+              echo "··· logs $POD ···"
+              kubectl logs "$POD" -n digitrans-crm --all-containers --tail=50 2>/dev/null || echo "(pas de logs)"
+            done
+            echo "════════════════════════════════════════════"
+            exit 1
+          fi
 
       - name: Deploy Frontend to S3
         run: |
