@@ -258,7 +258,7 @@ resource "aws_network_acl" "private" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = aws_subnet.private[*].id
 
-  # Règle entrante : Autoriser depuis le VPC
+  # Règle entrante : Autoriser tout le trafic interne au VPC
   ingress {
     protocol   = "-1"
     rule_no    = 100
@@ -266,6 +266,18 @@ resource "aws_network_acl" "private" {
     cidr_block = var.vpc_cidr
     from_port  = 0
     to_port    = 0
+  }
+
+  # Règle entrante : Autoriser le trafic de RETOUR depuis Internet (via NAT)
+  # Indispensable pour que les nodes EKS rejoignent le cluster (ECR, API EKS).
+  # Les NACL étant stateless, les réponses arrivent sur des ports éphémères.
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 200
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 1024
+    to_port    = 65535
   }
 
   # Règle sortante : Autoriser tout
