@@ -557,6 +557,9 @@ jobs:
       AWS_REGION: af-south-1
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -615,14 +618,32 @@ jobs:
 
       - name: Deploy Frontend to S3
         run: |
-          if [ -n "${{ secrets.S3_BUCKET_NAME }}" ]; then
-            cd frontend
-            aws s3 sync . "s3://${{ secrets.S3_BUCKET_NAME }}/" \
+          set -e
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="digitrans-crm-frontend-${AWS_ACCOUNT_ID}"
+
+          # Récupérer l'URL de l'ALB pour configurer le frontend
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names digitrans-crm-alb --region "$AWS_REGION" \
+            --query 'LoadBalancers[0].DNSName' --output text)
+          echo "ALB : $ALB_DNS"
+
+          # Pointer le frontend vers l'API déployée (au lieu de localhost)
+          sed -i "s#API_URL: 'http://localhost:8000/api'#API_URL: 'http://${ALB_DNS}/api'#g" \
+            frontend/config.js
+          echo "config.js mis à jour :"
+          grep "API_URL" frontend/config.js
+
+          # Déployer le frontend sur S3
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            aws s3 sync frontend/ "s3://${BUCKET}/" \
               --exclude "*.md" \
               --exclude ".git/*" \
               --delete
+            WEBSITE="http://${BUCKET}.s3-website.${AWS_REGION}.amazonaws.com"
+            echo "🌐 Interface web CRM : ${WEBSITE}"
           else
-            echo "S3_BUCKET_NAME non défini — étape frontend ignorée."
+            echo "⚠️ Bucket $BUCKET introuvable (Terraform pas encore appliqué ?) — étape ignorée."
           fi
 
   # ============= JOB 6 : NOTIFY =============
