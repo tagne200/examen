@@ -529,18 +529,59 @@ jobs:
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          set -e
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION=af-south-1
+          IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/digitrans-crm-api:${IMAGE_TAG}"
+
           cd infrastructure/kubernetes
+
+          # 1. Namespace
           kubectl apply -f namespace.yaml
-          kubectl set image deployment/crm-api crm-api=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.af-south-1.amazonaws.com/digitrans-crm-api:$IMAGE_TAG -n digitrans-crm
-          kubectl rollout status deployment/crm-api -n digitrans-crm
-      
+
+          # 2. Secret applicatif (DATABASE_URL construit depuis Secrets Manager)
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "digitrans-crm-production/db/password" \
+            --region "$REGION" --query SecretString --output text 2>/dev/null || echo "")
+          if [ -n "$SECRET_JSON" ]; then
+            DB_USER=$(echo "$SECRET_JSON" | jq -r .username)
+            DB_PASS=$(echo "$SECRET_JSON" | jq -r .password)
+            DB_HOST=$(echo "$SECRET_JSON" | jq -r .host)
+            DB_PORT=$(echo "$SECRET_JSON" | jq -r .port)
+            DB_NAME=$(echo "$SECRET_JSON" | jq -r .dbname)
+            DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+          else
+            echo "⚠️ Secret RDS introuvable — DATABASE_URL placeholder"
+            DATABASE_URL="postgresql://dbadmin:changeme@localhost:5432/crm_prod_db"
+          fi
+
+          kubectl create secret generic crm-secrets \
+            --namespace digitrans-crm \
+            --from-literal=database-url="$DATABASE_URL" \
+            --from-literal=azure-tenant-id="dev-tenant-id" \
+            --from-literal=azure-client-id="dev-client-id" \
+            --from-literal=azure-client-secret="dev-secret" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # 3. Déploiement + Service + HPA (avec substitution de l'image)
+          sed "s#ACCOUNT_ID.dkr.ecr.af-south-1.amazonaws.com/digitrans-crm-api:latest#${IMAGE}#g" \
+            deployment.yaml | kubectl apply -f -
+
+          # 4. Forcer l'image exacte (sécurité) et attendre le rollout
+          kubectl set image deployment/crm-api crm-api="${IMAGE}" -n digitrans-crm
+          kubectl rollout status deployment/crm-api -n digitrans-crm --timeout=300s
+
       - name: Deploy Frontend to S3
         run: |
-          cd frontend
-          aws s3 sync . s3://${{ secrets.S3_BUCKET_NAME }}/ \
-            --exclude "*.md" \
-            --exclude ".git/*" \
-            --delete
+          if [ -n "${{ secrets.S3_BUCKET_NAME }}" ]; then
+            cd frontend
+            aws s3 sync . "s3://${{ secrets.S3_BUCKET_NAME }}/" \
+              --exclude "*.md" \
+              --exclude ".git/*" \
+              --delete
+          else
+            echo "S3_BUCKET_NAME non défini — étape frontend ignorée."
+          fi
       
       - name: Invalidate CloudFront cache
         if: false  # Désactivé temporairement - CloudFront pas encore créé
