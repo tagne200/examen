@@ -235,15 +235,42 @@ jobs:
             echo "AVERTISSEMENT : impossible de créer la table DynamoDB (permission manquante). Le verrouillage d'état est désactivé."
           fi
 
-      # ── Étape 2 : init avec backend S3 persistant ─────────────────────────
+      # ── Étape 2 : init avec backend S3 persistant (auto-réparation) ───────
       - name: Terraform Init
         run: |
           cd infrastructure/aws
+          set +e  # on gère les codes de retour manuellement
+
           terraform init \
             -backend-config="bucket=$TF_STATE_BUCKET" \
             -backend-config="key=$TF_STATE_KEY" \
             -backend-config="region=$AWS_REGION" \
-            -reconfigure
+            -reconfigure > /tmp/init.log 2>&1
+          RC=$?
+          cat /tmp/init.log
+
+          if [ "$RC" -ne 0 ] && grep -q "does not have the expected content\|checksum" /tmp/init.log; then
+            echo "⚠️ Digest d'état périmé (run interrompu) — nettoyage DynamoDB et nouvel essai..."
+            aws dynamodb delete-item \
+              --table-name "$TF_LOCK_TABLE" \
+              --key "{\"LockID\": {\"S\": \"${TF_STATE_BUCKET}/${TF_STATE_KEY}-md5\"}}" \
+              --region "$AWS_REGION" || true
+            # Supprimer aussi un éventuel verrou resté bloqué
+            aws dynamodb delete-item \
+              --table-name "$TF_LOCK_TABLE" \
+              --key "{\"LockID\": {\"S\": \"${TF_STATE_BUCKET}/${TF_STATE_KEY}\"}}" \
+              --region "$AWS_REGION" || true
+
+            echo "Nouvel essai de terraform init..."
+            terraform init \
+              -backend-config="bucket=$TF_STATE_BUCKET" \
+              -backend-config="key=$TF_STATE_KEY" \
+              -backend-config="region=$AWS_REGION" \
+              -reconfigure
+            RC=$?
+          fi
+
+          exit "$RC"
 
       # ── Étape 3 : importer les ressources AWS déjà existantes ─────────────
       # Idempotent : skip si déjà dans l'état, || true si la ressource n'existe pas
