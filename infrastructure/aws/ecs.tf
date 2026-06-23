@@ -39,7 +39,7 @@ resource "aws_cloudwatch_log_group" "ecs" {
 # SG de l'ALB : accepte le trafic HTTP depuis Internet
 resource "aws_security_group" "alb" {
   name        = "${local.full_name}-alb-sg"
-  description = "Security group pour l'Application Load Balancer"
+  description = "Security group pour Application Load Balancer"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -67,7 +67,7 @@ resource "aws_security_group" "ecs_tasks" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Trafic applicatif depuis l'ALB"
+    description     = "Trafic applicatif depuis ALB"
     from_port       = 8000
     to_port         = 8000
     protocol        = "tcp"
