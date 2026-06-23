@@ -238,9 +238,6 @@ jobs:
           import_if_needed "aws_iam_role.rds_monitoring[0]" \
             "digitrans-crm-production-rds-monitoring-role"
 
-          import_if_needed "aws_db_subnet_group.main" \
-            "digitrans-crm-production-db-subnet-group"
-
           import_if_needed "aws_db_parameter_group.main" \
             "digitrans-crm-production-db-params"
 
@@ -261,14 +258,65 @@ jobs:
             import_if_needed "aws_sns_topic.alerts" "$SNS_ARN"
           fi
 
-          # ── Ressources réseau (créées lors du run échoué) ────────────────
-          VPC_ID=$(aws ec2 describe-vpcs \
-            --filters "Name=tag:Project,Values=digitrans-crm" \
-                      "Name=tag:Environment,Values=production" \
-            --query 'Vpcs[0].VpcId' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+          # ── Sélection du VPC de référence ────────────────────────────────────
+          # Priorité : VPC de l'instance RDS (si elle existe) → le plus stable
+          # Fallback : VPC avec le plus de subnets parmi ceux tagués
+
+          VPC_ID=""
+
+          # 1. Chercher via l'instance RDS
+          RDS_STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "digitrans-crm-production-db" \
+            --region "$AWS_REGION" \
+            --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "")
+
+          if [ -n "$RDS_STATUS" ] && [ "$RDS_STATUS" != "None" ]; then
+            echo "Instance RDS trouvée (statut: $RDS_STATUS) → son VPC devient la référence"
+            VPC_ID=$(aws rds describe-db-subnet-groups \
+              --db-subnet-group-name "digitrans-crm-production-db-subnet-group" \
+              --region "$AWS_REGION" \
+              --query 'DBSubnetGroups[0].VpcId' --output text 2>/dev/null || echo "")
+            echo "VPC de référence (depuis RDS) : $VPC_ID"
+          fi
+
+          # 2. Fallback : VPC taggé avec le plus de subnets
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+            mapfile -t ALL_VPCS < <(aws ec2 describe-vpcs \
+              --filters "Name=tag:Project,Values=digitrans-crm" \
+                        "Name=tag:Environment,Values=production" \
+              --query 'Vpcs[*].VpcId' --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+            echo "VPCs trouvés par tag : ${#ALL_VPCS[@]}"
+            MAX=0
+            for v in "${ALL_VPCS[@]}"; do
+              C=$(aws ec2 describe-subnets \
+                --filters "Name=vpc-id,Values=$v" \
+                --query 'length(Subnets)' --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
+              echo "  $v → $C subnets"
+              if [ "$C" -gt "$MAX" ]; then MAX=$C; VPC_ID=$v; fi
+            done
+            echo "VPC de référence (par tags) : $VPC_ID"
+          fi
+
+          # ── Import des ressources réseau dans le VPC de référence ────────────
 
           if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
             import_if_needed "aws_vpc.main" "$VPC_ID"
+
+            # DB Subnet Group : appartient forcément au VPC de référence (on a choisi le VPC depuis lui)
+            SG_VPC=$(aws rds describe-db-subnet-groups \
+              --db-subnet-group-name "digitrans-crm-production-db-subnet-group" \
+              --region "$AWS_REGION" \
+              --query 'DBSubnetGroups[0].VpcId' --output text 2>/dev/null || echo "")
+            if [ -z "$SG_VPC" ] || [ "$SG_VPC" = "None" ]; then
+              echo "INFO db_subnet_group : n'existe pas, sera créé par Terraform"
+            else
+              import_if_needed "aws_db_subnet_group.main" "digitrans-crm-production-db-subnet-group"
+            fi
+
+            # Instance RDS
+            if [ -n "$RDS_STATUS" ] && [ "$RDS_STATUS" != "None" ]; then
+              import_if_needed "aws_db_instance.main" "digitrans-crm-production-db"
+            fi
 
             # Internet Gateway
             IGW_ID=$(aws ec2 describe-internet-gateways \
@@ -296,7 +344,7 @@ jobs:
               import_if_needed "aws_subnet.private[$i]" "${PRIVATE_SUBNETS[$i]}"
             done
 
-            # NAT Gateways (coûteux — important à récupérer)
+            # NAT Gateways
             mapfile -t NAT_GWS < <(aws ec2 describe-nat-gateways \
               --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
               --query 'NatGateways[*].NatGatewayId' --output text --region "$AWS_REGION" \
