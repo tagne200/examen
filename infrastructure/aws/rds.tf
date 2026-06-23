@@ -237,60 +237,9 @@ resource "aws_iam_role_policy_attachment" "rds_monitoring" {
 # ============================================
 # CloudWatch Alarms pour RDS
 # ============================================
-
-resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
-  alarm_name          = "${local.full_name}-rds-high-cpu"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
-  metric_name         = "CPUUtilization"
-  namespace           = "AWS/RDS"
-  period              = "300"
-  statistic           = "Average"
-  threshold           = "80"
-  alarm_description   = "This metric monitors RDS CPU utilization"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-
-  dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
-  }
-
-  tags = local.common_tags
-}
-
-resource "aws_cloudwatch_metric_alarm" "rds_storage" {
-  alarm_name          = "${local.full_name}-rds-low-storage"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "1"
-  metric_name         = "FreeStorageSpace"
-  namespace           = "AWS/RDS"
-  period              = "300"
-  statistic           = "Average"
-  threshold           = "5000000000"  # 5 GB
-  alarm_description   = "This metric monitors RDS free storage space"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-
-  dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
-  }
-
-  tags = local.common_tags
-}
-
-resource "aws_cloudwatch_metric_alarm" "rds_connections" {
-  alarm_name          = "${local.full_name}-rds-high-connections"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "2"
-  metric_name         = "DatabaseConnections"
-  namespace           = "AWS/RDS"
-  period              = "300"
-  statistic           = "Average"
-  threshold           = "80"
-  alarm_description   = "This metric monitors RDS database connections"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-
-  dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
-  }
-
-  tags = local.common_tags
-}
+# NOTE : Les alarmes CloudWatch (rds-high-cpu, rds-low-storage,
+# rds-high-connections) sont créées dans AWS mais NON gérées par Terraform,
+# car l'utilisateur CI ne dispose pas de cloudwatch:ListTagsForResource
+# (quota de policies IAM atteint). Les alarmes restent fonctionnelles dans
+# la console CloudWatch. Pour les remettre sous gestion Terraform, accorder
+# les permissions cloudwatch:* puis ré-importer ces ressources.

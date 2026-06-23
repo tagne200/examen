@@ -154,46 +154,6 @@ jobs:
           terraform_version: 1.7.5
           terraform_wrapper: false
 
-      # ── Étape 0 : garantir les permissions IAM nécessaires au CI ──────────
-      # L'utilisateur github-actions-digitrans possède IAMFullAccess, il peut
-      # donc s'attribuer les policies manquantes (idempotent), puis on ATTEND
-      # que la permission CloudWatch soit réellement propagée avant Terraform.
-      - name: Ensure CI user IAM permissions
-        run: |
-          set -e
-          CI_USER="github-actions-digitrans"
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-          # 1. Attacher la policy CloudWatch (visible si échec)
-          echo "Attachement de CloudWatchFullAccess à $CI_USER..."
-          if aws iam attach-user-policy \
-            --user-name "$CI_USER" \
-            --policy-arn "arn:aws:iam::aws:policy/CloudWatchFullAccess"; then
-            echo "  → policy attachée (ou déjà présente)"
-          else
-            echo "  ⚠️ Échec de l'attachement automatique."
-            echo "  → Attachez manuellement 'CloudWatchFullAccess' à l'utilisateur $CI_USER dans la console IAM."
-          fi
-
-          # 2. Attendre la propagation effective (test réel sur une alarme existante)
-          ALARM_ARN="arn:aws:cloudwatch:${AWS_REGION}:${ACCOUNT_ID}:alarm:digitrans-crm-production-rds-high-cpu"
-          echo "Vérification de la propagation IAM (cloudwatch:ListTagsForResource)..."
-          OK=0
-          for i in $(seq 1 24); do
-            if aws cloudwatch list-tags-for-resource \
-              --resource-arn "$ALARM_ARN" --region "$AWS_REGION" &>/dev/null; then
-              echo "  → permission CloudWatch active (après $((i*5))s)"
-              OK=1
-              break
-            fi
-            echo "  attente propagation... (${i}/24)"
-            sleep 5
-          done
-          if [ "$OK" -ne 1 ]; then
-            echo "⚠️ Permission CloudWatch toujours inactive après 120s."
-            echo "   Si l'erreur persiste, attachez CloudWatchFullAccess manuellement puis relancez."
-          fi
-
       # ── Étape 1 : créer le bucket S3 + table DynamoDB si absents ──────────
       - name: Bootstrap Terraform state backend
         run: |
@@ -480,6 +440,20 @@ jobs:
           else
             echo "INFO cluster EKS : non trouvé via l'API"
           fi
+
+          # ── Retirer les alarmes CloudWatch de l'état Terraform ────────────────
+          # Elles ne sont plus définies dans rds.tf (permission ListTagsForResource
+          # manquante). On les retire de l'état pour éviter une tentative de destroy.
+          # Les alarmes restent actives dans AWS (orphelines mais fonctionnelles).
+          for ALARM in \
+            "aws_cloudwatch_metric_alarm.rds_cpu" \
+            "aws_cloudwatch_metric_alarm.rds_storage" \
+            "aws_cloudwatch_metric_alarm.rds_connections"; do
+            if terraform state show "$ALARM" &>/dev/null; then
+              echo "Retrait de $ALARM de l'état Terraform"
+              terraform state rm "$ALARM" || true
+            fi
+          done
 
           echo "Import des ressources existantes terminé."
           exit 0
