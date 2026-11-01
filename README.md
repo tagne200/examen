@@ -46,5 +46,8 @@ Voir [DEPLOYMENT.md](DEPLOYMENT.md) pour les instructions détaillées.
 - [Rapport d'activité](RAPPORT_ACTIVITE.md)
 - [Documentation API](docs/api-documentation.md)
 
+### Documentation consolidée
+Consultez [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md) pour une vue d'ensemble du code, de l'API et du pipeline.
+
 ### Licence
 Propriété de CAMTECH SOLUTIONS S.A. - Tous droits réservés.
